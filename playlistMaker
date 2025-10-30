@@ -1,0 +1,93 @@
+import os
+from dotenv import load_dotenv
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+import pytesseract
+from PIL import Image
+
+#================================================
+load_dotenv()
+
+sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+    redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
+    scope="playlist-modify-public playlist-modify-private"
+))
+
+#================================================
+playlist_title = input("プレイリストのタイトルを入力: ")
+
+#例: ["ELLEGARDEN", "ハルカミライ"]
+artists = ["ELLEGARDEN", "ハルカミライ"]
+
+#例: ["ELLEGARDEN_setlist.png", "ハルカミライ_setlist.png"]
+setlist_images = ["ELLEGARDEN_setlist.png", "ハルカミライ_setlist.png"]
+
+#Switch 1 → まとめる, 2 → 個別
+switch_playlist_mode = int(input("プレイリストモードを選択（1=まとめる / 2=個別）: "))
+
+#公開設定スイッチ：1=公開, 2=非公開
+switch_public_mode = int(input("公開設定を選択（1=公開 / 2=非公開）: "))
+is_public = True if switch_public_mode == 1 else False
+
+#if len(artists) != len(setlist_images):
+    #raise ValueError("アーティストリストと画像リストの数が不一致")
+
+user_id = sp.me()["id"]
+
+#================================================
+def extract_songs_from_image(image_path):
+    """OCRで画像から曲名を改行単位で抽出"""
+    text = pytesseract.image_to_string(
+        Image.open(image_path),
+        lang='jpn+eng',
+        config='--psm 6 --oem 3 -c preserve_interword_spaces=1'
+    )
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return list(dict.fromkeys(lines))  #重複削除＋順序保持
+
+#================================================
+if switch_playlist_mode == 1:
+    playlist = sp.user_playlist_create(user_id, playlist_title, public=is_public)
+    master_playlist_id = playlist["id"]
+    print(f"プレイリスト作成: {playlist_title}（{'公開' if is_public else '非公開'}）")
+
+#================================================
+for idx, artist in enumerate(artists):
+    image_path = setlist_images[idx]
+    print(f"{artist} のセットリスト解析中: {image_path}")
+
+    #OCRで曲名抽出
+    songs = extract_songs_from_image(image_path)
+    print(f"抽出された曲数: {len(songs)}")
+
+    #プレイリスト選択
+    if switch_playlist_mode == 2:
+        playlist_name = f"{playlist_title} - {artist}"
+        playlist = sp.user_playlist_create(user_id, playlist_name, public=is_public)
+        playlist_id = playlist["id"]
+        print(f"個別プレイリスト作成: {playlist_name}（{'公開' if is_public else '非公開'}）")
+    else:
+        playlist_id = master_playlist_id
+
+    #Spotify検索と曲追加
+    track_uris = []
+    for title in songs:
+        query = f"track:{title} artist:{artist}"
+        result = sp.search(q=query, type="track", limit=1)
+        tracks = result["tracks"]["items"]
+        if tracks:
+            uri = tracks[0]["uri"]
+            if uri not in track_uris:
+                track_uris.append(uri)
+                print(f"✅ {artist} - {title} added")
+        else:
+            print(f"❌ {artist} - {title} not found")
+
+    if track_uris:
+        sp.playlist_add_items(playlist_id, track_uris)
+
+print("Finished")
+if switch_playlist_mode == 1:
+    print(f"URL: {playlist['external_urls']['spotify']}")
